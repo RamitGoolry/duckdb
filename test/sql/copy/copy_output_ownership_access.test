@@ -1,0 +1,41 @@
+# name: test/sql/copy/copy_output_ownership_access.test
+# description: COPY output ownership checks respect allowed_directories when external access is disabled
+# group: [copy]
+
+require skip_reload
+
+require no_extension_autoloading "EXPECTED: Test disable autoloading"
+
+statement ok
+COPY (SELECT 1 AS v, 0 AS p) TO '{TEMP_DIR}/ownership_allowed' (FORMAT CSV, PARTITION_BY (p));
+
+statement ok
+SET allowed_directories=['{TEMP_DIR}/ownership_allowed/']
+
+statement ok
+SET enable_external_access=false
+
+# a new file inside an allowed directory
+statement ok
+COPY (SELECT 1 AS v) TO '{TEMP_DIR}/ownership_allowed/new.csv' (FORMAT CSV);
+
+# an existing file inside an allowed directory
+statement ok
+COPY (SELECT 2 AS v) TO '{TEMP_DIR}/ownership_allowed/p=0/data_0.csv' (FORMAT CSV);
+
+query I
+SELECT v FROM read_csv('{TEMP_DIR}/ownership_allowed/p=0/data_0.csv');
+----
+2
+
+# a file outside the allowed directories
+statement error
+COPY (SELECT 1 AS v) TO '{TEMP_DIR}/ownership_denied.csv' (FORMAT CSV);
+----
+Permission Error: Cannot access file
+
+# the allowed directory itself, named without its trailing slash, is not a writable file
+statement error
+COPY (SELECT 1 AS v) TO '{TEMP_DIR}/ownership_allowed' (FORMAT CSV);
+----
+Permission Error: Cannot access file

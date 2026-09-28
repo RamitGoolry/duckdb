@@ -1,0 +1,58 @@
+# name: test/sql/copy/copy_output_ownership.test
+# description: a failed COPY removes only the outputs it created, whether the target was a new path, an existing file or an existing directory
+# group: [copy]
+
+require parquet
+
+statement ok
+SET threads=1;
+
+# New outputs are removed when the COPY fails
+statement error
+COPY (SELECT CASE WHEN i = 4096 THEN error('injected new-path failure') ELSE i END AS v, i % 3 AS p
+      FROM range(8192) t(i))
+TO '{TEMP_DIR}/ownership_new' (FORMAT PARQUET, PARTITION_BY (p));
+----
+injected new-path failure
+
+query I
+SELECT count(*) FROM glob('{TEMP_DIR}/ownership_new/**');
+----
+0
+
+# A partition file that existed before the COPY is not removed when the COPY fails
+statement ok
+COPY (SELECT i AS v, i % 3 AS p FROM range(30) t(i))
+TO '{TEMP_DIR}/ownership_existing_file' (FORMAT PARQUET, PARTITION_BY (p));
+
+query I
+SELECT count(*) FROM glob('{TEMP_DIR}/ownership_existing_file/**/*.parquet');
+----
+3
+
+statement error
+COPY (SELECT CASE WHEN i = 4096 THEN error('injected existing-file failure') ELSE i END AS v, i % 3 AS p
+      FROM range(8192) t(i))
+TO '{TEMP_DIR}/ownership_existing_file' (FORMAT PARQUET, PARTITION_BY (p), OVERWRITE_OR_IGNORE);
+----
+injected existing-file failure
+
+query I
+SELECT count(*) FROM glob('{TEMP_DIR}/ownership_existing_file/**/*.parquet');
+----
+3
+
+# A directory given as the output path is never removed, and neither is its content
+statement ok
+COPY (SELECT i AS v, i % 2 AS p FROM range(10) t(i))
+TO '{TEMP_DIR}/ownership_existing_dir' (FORMAT CSV, PARTITION_BY (p));
+
+statement error
+COPY (SELECT 42 AS v) TO '{TEMP_DIR}/ownership_existing_dir' (FORMAT CSV);
+----
+Cannot open file
+
+query I
+SELECT count(*) FROM read_csv('{TEMP_DIR}/ownership_existing_dir/**/*.csv', hive_partitioning=true);
+----
+10
